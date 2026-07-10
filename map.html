@@ -1,0 +1,2175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Living Rivers of India — KisanAI</title>
+<meta name="description" content="A decade of water quality across India's major rivers — explore pollution trends, seasonal patterns, and crop disease outbreaks in full 3D." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💧</text></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;600&display=swap" rel="stylesheet" />
+
+<!-- MapLibre GL — free WebGL map engine with true 3D pitch + rotation
+     (replaces Leaflet: Leaflet is 2D-only and cannot tilt or rotate) -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<!-- GSAP for UI animations -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<!-- D3 — smooth colour interpolation on the time slider -->
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<style>
+/* ============================================================
+   DESIGN TOKENS — matched to index.html / dashboard.html
+   ============================================================ */
+:root {
+  --ink:          #050d1a;
+  --ink-2:        #071428;
+  --accent:       #52B788;
+  --gold:         #D4A017;
+  --soil:         #6B4226;
+  --river-blue:   #1A759F;
+  --cream:        #F4F1DE;
+  --grey:         #8a9eb0;
+  --danger:       #e05252;
+  --glass:        rgba(82, 183, 136, 0.06);
+  --line:         rgba(82, 183, 136, 0.18);
+  --glow:         rgba(82, 183, 136, 0.32);
+  --font-display: "Bebas Neue", sans-serif;
+  --font-body:    "Inter", sans-serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink);
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--cream);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: var(--font-body); border: none; }
+::selection { background: var(--accent); color: var(--ink); }
+
+/* ============================================================
+   MAP — full viewport WebGL canvas. Everything (tiles + rivers)
+   renders in one canvas, so the colour grade filter applies to
+   the whole scene uniformly.
+   ============================================================ */
+#map-container {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+#map { width: 100%; height: 100%; background: var(--ink); }
+
+/* deep blue-teal ocean grade, matching the dashboard mesh */
+.maplibregl-canvas {
+  filter: brightness(0.85) contrast(1.12) saturate(1.55) hue-rotate(10deg);
+}
+
+/* grab cursor everywhere; pointer is set from JS over rivers */
+.maplibregl-canvas-container.maplibregl-interactive { cursor: grab; }
+.maplibregl-canvas-container.maplibregl-interactive:active { cursor: grabbing; }
+
+/* attribution: legally required, visually minimal */
+.maplibregl-ctrl-attrib {
+  background: transparent !important;
+  opacity: 0.25 !important;
+  font-size: 9px !important;
+}
+.maplibregl-ctrl-attrib a { color: var(--grey) !important; }
+
+/* ============================================================
+   RIVER LABELS + ENDPOINT DOTS (DOM markers above the canvas)
+   ============================================================ */
+.river-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.34em;
+  color: rgba(244, 241, 222, 0.55);
+  text-shadow: 0 0 12px rgba(82, 183, 136, 0.55), 0 2px 8px rgba(0,0,0,.8);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: color 0.3s ease, text-shadow 0.3s ease, opacity 0.4s ease;
+  transform: translateY(-16px);
+}
+.river-label.lit {
+  color: var(--cream);
+  text-shadow: 0 0 18px rgba(120, 220, 180, 0.9), 0 2px 8px rgba(0,0,0,.9);
+}
+
+.endpoint-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: rgba(140, 230, 190, 0.9);
+  box-shadow: 0 0 10px rgba(82,183,136,.9), 0 0 26px rgba(82,183,136,.5);
+  animation: endpointPulse 2.6s ease-in-out infinite;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+@keyframes endpointPulse {
+  0%, 100% { transform: scale(1);   opacity: .85; }
+  50%      { transform: scale(1.5); opacity: 1;   }
+}
+
+/* expanding ring shown at the click point on a river */
+.click-ring {
+  width: 18px; height: 18px;
+  border: 2px solid #7de8b8;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: ringExpand 0.7s ease-out forwards;
+}
+@keyframes ringExpand {
+  from { transform: scale(1);   opacity: 1; }
+  to   { transform: scale(4.5); opacity: 0; }
+}
+
+/* pulsing flow-direction arrows (rotate WITH the map via marker options) */
+.flow-arrow {
+  color: #7de8b8;
+  font-size: 13px;
+  text-shadow: 0 0 8px rgba(82,183,136,.9);
+  animation: arrowPulse 2.4s ease-in-out infinite;
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes arrowPulse {
+  0%   { opacity: 0;   }
+  20%  { opacity: 0.8; }
+  75%  { opacity: 0.8; }
+  100% { opacity: 0;   }
+}
+
+/* disease outbreak blobs */
+.outbreak-blob {
+  border-radius: 50%;
+  cursor: pointer;
+  animation: blobPulse 3s ease-in-out infinite;
+}
+@keyframes blobPulse {
+  0%, 100% { transform: scale(1);    opacity: .7; }
+  50%      { transform: scale(1.09); opacity: .9; }
+}
+
+/* ============================================================
+   FILM GRAIN — matches index.html exactly
+   ============================================================ */
+#grain {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9000;
+  pointer-events: none;
+  opacity: 0.045;
+  image-rendering: pixelated;
+}
+
+/* ============================================================
+   AURORA WASH — living blue→teal→green mesh, screened over the
+   scene so the page shares the dashboard's colour atmosphere
+   ============================================================ */
+#aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  background:
+    radial-gradient(ellipse 85vw 75vh at 12% 15%,  rgba(26, 58, 107, .50), transparent 62%),
+    radial-gradient(ellipse 70vw 85vh at 88% 85%,  rgba(13, 74, 58,  .45), transparent 60%),
+    radial-gradient(ellipse 60vw 60vh at 50% 45%,  rgba(10, 45, 74,  .32), transparent 58%),
+    radial-gradient(ellipse 55vw 50vh at 80% 12%,  rgba(20, 90, 80,  .28), transparent 64%);
+  animation: auroraDrift 26s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift {
+  0%   { transform: translate3d(0,0,0)      scale(1);    }
+  100% { transform: translate3d(2%, -2%, 0) scale(1.06); }
+}
+
+/* ============================================================
+   RADAR SWEEP — slow rotating light beam, live-monitoring feel
+   ============================================================ */
+#radar {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 160vmax;
+  height: 160vmax;
+  margin: -80vmax 0 0 -80vmax;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 336deg,
+    rgba(82, 183, 136, 0.05) 350deg,
+    rgba(120, 220, 180, 0.10) 358deg,
+    transparent 360deg
+  );
+  animation: radarSpin 16s linear infinite;
+  opacity: 0.8;
+}
+@keyframes radarSpin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   VIGNETTE — frames the scene, pulses during camera flight
+   ============================================================ */
+#vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 34%, rgba(2, 6, 16, 0.62) 100%);
+  opacity: 0.42;
+}
+
+/* ============================================================
+   AMBIENT PARTICLES
+   ============================================================ */
+#particles {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* ============================================================
+   LOADING SCREEN
+   ============================================================ */
+#loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background:
+    radial-gradient(ellipse 70vw 60vh at 30% 20%, rgba(26,58,107,.5), transparent 60%),
+    radial-gradient(ellipse 60vw 70vh at 75% 80%, rgba(13,74,58,.45), transparent 60%),
+    var(--ink);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  transition: opacity 0.9s ease;
+}
+#loading-screen.fade-out { opacity: 0; pointer-events: none; }
+
+.loading-text {
+  font-family: var(--font-display);
+  font-size: 26px;
+  letter-spacing: 0.4em;
+  color: var(--cream);
+}
+.loading-text .lt-ch { display: inline-block; opacity: 0; transform: translateY(14px); }
+
+.loading-sub {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--grey);
+  text-transform: uppercase;
+  margin-top: -16px;
+}
+
+.loading-bar-track {
+  width: 260px;
+  height: 2px;
+  background: rgba(82,183,136,.14);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.loading-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--river-blue), var(--accent));
+  border-radius: 2px;
+  box-shadow: 0 0 12px rgba(82,183,136,.7);
+  transition: width 0.25s ease;
+}
+
+/* ============================================================
+   TOP NAV — glass bar
+   ============================================================ */
+#topnav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 8000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 28px;
+  background: rgba(5, 13, 26, 0.66);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+  height: 56px;
+}
+
+.nav-back {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--cream);
+  opacity: 0.75;
+  transition: opacity 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.nav-back:hover { opacity: 1; color: var(--accent); }
+
+/* sits in the flex row between logo and toggle — can never overlap */
+.nav-title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.32em;
+  color: var(--cream);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 18px;
+}
+
+.layer-toggle {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(5, 13, 26, 0.4);
+}
+.layer-btn {
+  padding: 6px 16px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--grey);
+  background: transparent;
+  transition: background 0.25s, color 0.25s;
+  white-space: nowrap;
+}
+.layer-btn.active { background: var(--accent); color: var(--ink); font-weight: 600; }
+
+.layer-toggle-mobile {
+  display: none;
+  background: rgba(5,13,26,0.6);
+  border: 1px solid var(--line) !important;
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--cream);
+  font-size: 15px;
+}
+
+/* ============================================================
+   MODE LABEL — top-left pill
+   ============================================================ */
+#mode-label {
+  position: fixed;
+  top: 68px;
+  left: 18px;
+  z-index: 7000;
+  background: rgba(5,13,26,0.7);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 15px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--cream);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* ============================================================
+   ROTATE HINT — bottom-left pill telling users about 3D controls
+   ============================================================ */
+#rotate-hint {
+  position: fixed;
+  bottom: 24px;
+  left: 18px;
+  z-index: 7000;
+  background: rgba(5,13,26,0.7);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--grey);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: opacity 1s ease;
+}
+#rotate-hint b { color: var(--accent); font-weight: 600; }
+
+/* ============================================================
+   LEGEND — top-right glass card
+   ============================================================ */
+#legend {
+  position: fixed;
+  top: 68px;
+  right: 18px;
+  z-index: 7000;
+  background: rgba(5,13,26,0.76);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 18px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  min-width: 175px;
+}
+.legend-title {
+  font-size: 8.5px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--grey);
+  margin-bottom: 10px;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--cream);
+  opacity: 0.88;
+}
+.legend-swatch {
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px currentColor;
+}
+.legend-note {
+  font-size: 8px;
+  color: var(--grey);
+  margin-top: 10px;
+  opacity: 0.6;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   TIME MACHINE — bottom-center smooth slider
+   ============================================================ */
+#time-panel {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7000;
+  background: rgba(5,13,26,0.76);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 28px 12px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  min-width: 400px;
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(0,0,0,.45);
+}
+
+#year-display {
+  font-family: var(--font-display);
+  font-size: 42px;
+  color: var(--cream);
+  line-height: 1;
+  margin-bottom: 10px;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 24px rgba(82,183,136,.35);
+}
+
+#year-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(to right, #52B788 0%, #D4A017 55%, #e05252 100%);
+  box-shadow: 0 0 10px rgba(82,183,136,.25);
+}
+#year-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #9fe8c6, var(--accent));
+  box-shadow: 0 0 14px rgba(82,183,136,0.75), 0 0 0 4px rgba(82,183,136,0.15);
+  cursor: grab;
+  transition: box-shadow 0.2s;
+}
+#year-slider::-webkit-slider-thumb:active { cursor: grabbing; }
+#year-slider::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 22px rgba(82,183,136,0.9), 0 0 0 6px rgba(82,183,136,0.2);
+}
+#year-slider::-moz-range-thumb {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 14px rgba(82,183,136,0.75);
+  cursor: grab;
+  border: none;
+}
+
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 8px;
+  color: var(--grey);
+  opacity: 0.65;
+}
+
+.play-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+#play-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line) !important;
+  background: rgba(82,183,136,0.1);
+  color: var(--accent);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+#play-btn:hover { background: rgba(82,183,136,0.2); box-shadow: 0 0 14px rgba(82,183,136,.4); }
+#play-btn.playing { background: rgba(82,183,136,0.22); box-shadow: 0 0 14px rgba(82,183,136,.5); }
+
+.trend-caption {
+  font-size: 9.5px;
+  color: var(--grey);
+  letter-spacing: 0.1em;
+  opacity: 0.8;
+}
+
+/* ============================================================
+   CAMERA CONTROLS — bottom-right: zoom, compass reset, 3D toggle
+   ============================================================ */
+#cam-controls {
+  position: fixed;
+  bottom: 80px;
+  right: 18px;
+  z-index: 7000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cam-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line) !important;
+  background: rgba(5,13,26,0.66);
+  color: var(--cream);
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.cam-btn:hover {
+  background: rgba(82,183,136,0.14);
+  color: var(--accent);
+  box-shadow: 0 0 16px rgba(82,183,136,.35);
+}
+.cam-btn.small-icon { font-size: 15px; }
+/* the compass needle rotates to mirror the map's bearing */
+#compass-needle {
+  display: inline-block;
+  transition: transform 0.2s linear;
+  font-size: 17px;
+}
+
+/* ============================================================
+   RIVER DETAIL PANEL — slides in from right
+   ============================================================ */
+#river-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  z-index: 8600;
+  background: linear-gradient(170deg, rgba(8, 22, 42, 0.97), rgba(4, 11, 22, 0.99));
+  border-left: 1px solid var(--line);
+  transform: translateX(100%);
+  transition: transform 0.5s cubic-bezier(0.2,0.8,0.2,1);
+  overflow-y: auto;
+  padding: clamp(24px, 4vw, 40px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+#river-panel.open { transform: translateX(0); }
+#river-panel::-webkit-scrollbar { width: 4px; }
+#river-panel::-webkit-scrollbar-track { background: transparent; }
+#river-panel::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+
+.panel-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line) !important;
+  background: transparent;
+  color: var(--grey);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.2s, border-color 0.2s;
+}
+.panel-close:hover { color: var(--cream); border-color: rgba(82,183,136,0.4) !important; }
+
+.p-river-name {
+  font-family: var(--font-display);
+  font-size: 44px;
+  line-height: 1;
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+.p-subtitle {
+  font-size: 11px;
+  color: var(--grey);
+  letter-spacing: 0.15em;
+  margin-bottom: 10px;
+}
+.p-year-badge {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  padding: 3px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--grey);
+  margin-bottom: 18px;
+}
+.p-wqi-block {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 4px;
+}
+.p-wqi-num {
+  font-family: var(--font-display);
+  font-size: 72px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-shadow: 0 0 30px currentColor;
+}
+.p-wqi-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding-bottom: 10px;
+}
+.p-divider { height: 1px; background: var(--line); margin: 18px 0; }
+.p-section-title {
+  font-size: 8.5px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--grey);
+  margin-bottom: 12px;
+}
+
+.param-row { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.param-name { font-size: 10px; color: var(--grey); width: 96px; flex-shrink: 0; }
+.param-track {
+  flex: 1;
+  height: 4px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.param-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.7s cubic-bezier(0.2,0.8,0.2,1);
+  box-shadow: 0 0 6px currentColor;
+}
+.param-val {
+  font-size: 9.5px;
+  color: var(--cream);
+  opacity: 0.65;
+  width: 52px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.month-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 7.5px;
+  color: var(--grey);
+  opacity: 0.55;
+  margin-top: 4px;
+}
+
+.city-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(82,183,136,0.07);
+  font-size: 12px;
+  color: var(--cream);
+  opacity: 0.82;
+}
+.city-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  flex-shrink: 0;
+}
+
+.rec-box {
+  margin-top: 18px;
+  padding: 13px 16px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.035);
+  border-left: 3px solid var(--accent);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--cream);
+  opacity: 0.88;
+}
+
+.p-disease-name {
+  font-family: var(--font-display);
+  font-size: 38px;
+  color: var(--danger);
+  margin-top: 8px;
+  margin-bottom: 4px;
+  line-height: 1;
+  text-shadow: 0 0 24px rgba(224,82,82,.5);
+}
+.p-crop-tag {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 16px;
+}
+.p-report-count {
+  font-family: var(--font-display);
+  font-size: 68px;
+  line-height: 1;
+  text-shadow: 0 0 30px currentColor;
+}
+.trend-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 6px;
+  display: inline-block;
+}
+.trend-up   { background: rgba(224,82,82,0.13);  color: var(--danger); }
+.trend-down { background: rgba(82,183,136,0.13); color: var(--accent); }
+
+/* ============================================================
+   MOBILE — bottom sheet + layout adjustments
+   ============================================================ */
+@media (max-width: 820px) {
+  #river-panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: 75vh;
+    transform: translateY(100%);
+    border-left: none;
+    border-top: 1px solid var(--line);
+    border-radius: 20px 20px 0 0;
+  }
+  #river-panel.open { transform: translateY(0); }
+
+  #time-panel {
+    min-width: unset;
+    left: 14px;
+    right: 14px;
+    transform: none;
+    bottom: 14px;
+    padding: 12px 18px 10px;
+  }
+
+  .nav-title { display: none; }
+  .layer-toggle { display: none; }
+  .layer-toggle-mobile { display: flex; }
+  #mode-label { display: none; }
+  #rotate-hint { bottom: auto; top: 64px; left: 10px; }
+
+  #legend {
+    top: 64px;
+    right: 10px;
+    padding: 10px 12px;
+    min-width: 140px;
+  }
+
+  #cam-controls { bottom: 200px; }
+  #year-display { font-size: 30px; }
+  #radar { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-screen" aria-live="polite">
+  <div class="loading-text" id="loading-title">MAPPING INDIA'S RIVERS</div>
+  <div class="loading-sub">A decade of water quality data — now in 3D</div>
+  <div class="loading-bar-track">
+    <div class="loading-bar-fill" id="load-bar"></div>
+  </div>
+</div>
+
+<!-- Film grain canvas (matches index.html) -->
+<canvas id="grain" aria-hidden="true"></canvas>
+
+<!-- Ambient particles canvas -->
+<canvas id="particles" aria-hidden="true"></canvas>
+
+<!-- Aurora colour-grade wash + radar sweep + vignette -->
+<div id="aurora" aria-hidden="true"></div>
+<div id="radar" aria-hidden="true"></div>
+<div id="vignette" aria-hidden="true"></div>
+
+<!-- Full-screen 3D map -->
+<div id="map-container">
+  <div id="map"></div>
+</div>
+
+<!-- Top nav -->
+<nav id="topnav" role="navigation" aria-label="Map navigation">
+  <a href="index.html" class="nav-back" aria-label="Back to KisanAI">
+    🌿 &nbsp;← KISANAI
+  </a>
+
+  <span class="nav-title" aria-hidden="true">THE LIVING RIVERS OF INDIA</span>
+
+  <div class="layer-toggle" role="group" aria-label="Map layer">
+    <button class="layer-btn active" id="btn-water" aria-pressed="true">💧 Water Quality</button>
+    <button class="layer-btn" id="btn-disease" aria-pressed="false">🔴 Disease Outbreaks</button>
+  </div>
+
+  <button class="layer-toggle-mobile" id="btn-mobile-toggle" aria-label="Switch map layer">🗺️</button>
+</nav>
+
+<!-- Mode label pill (top-left) -->
+<div id="mode-label" aria-live="polite">💧 Water Quality View</div>
+
+<!-- 3D controls hint (bottom-left) -->
+<div id="rotate-hint" aria-hidden="true"></div>
+
+<!-- Legend (top-right) -->
+<div id="legend" role="complementary" aria-label="Map legend"></div>
+
+<!-- Time slider (bottom-center) -->
+<div id="time-panel" role="region" aria-label="Year selector">
+  <div id="year-display" aria-live="polite">2020</div>
+  <input type="range" id="year-slider" min="2015" max="2025" value="2020" step="0.01"
+         aria-label="Select year" aria-valuemin="2015" aria-valuemax="2025" aria-valuenow="2020" />
+  <div class="slider-ticks" aria-hidden="true">
+    <span>2015</span><span>2016</span><span>2017</span><span>2018</span><span>2019</span>
+    <span>2020</span><span>2021</span><span>2022</span><span>2023</span><span>2024</span>
+    <span>2025</span>
+  </div>
+  <div class="play-row">
+    <button id="play-btn" aria-label="Play year animation">▶</button>
+    <span class="trend-caption">DRAG THROUGH A DECADE OF RIVER HEALTH</span>
+  </div>
+</div>
+
+<!-- Camera controls (bottom-right): zoom + compass + 3D toggle -->
+<div id="cam-controls" role="group" aria-label="Camera controls">
+  <button class="cam-btn" id="zoom-in" aria-label="Zoom in">+</button>
+  <button class="cam-btn" id="zoom-out" aria-label="Zoom out">−</button>
+  <button class="cam-btn" id="compass-btn" aria-label="Reset rotation to north">
+    <span id="compass-needle">🧭</span>
+  </button>
+  <button class="cam-btn small-icon" id="tilt-btn" aria-label="Toggle 2D / 3D view">3D</button>
+</div>
+
+<!-- River / disease detail panel -->
+<div id="river-panel" role="complementary" aria-label="River details" aria-hidden="true">
+  <button class="panel-close" id="panel-close-btn" aria-label="Close panel">×</button>
+  <div id="panel-content"></div>
+</div>
+
+<script>
+(function(){ "use strict";
+
+/* ============================================================
+   RESPONSIVE + ACCESSIBILITY FLAGS — matches index.html pattern
+   ============================================================ */
+var isMobile = window.matchMedia("(max-width: 820px)").matches;
+var reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ============================================================
+   PLACEHOLDER DATA — swap with real CPCB dataset before
+   final submission. Values are illustrative approximations
+   derived from publicly available CPCB river quality reports.
+   NOTE: coords are stored [lat, lng] (human-readable) and are
+   converted to MapLibre's [lng, lat] order by toLngLat() below.
+   ============================================================ */
+var riverData = {
+  ganga: {
+    name: "Ganga",
+    subtitle: "The Sacred River",
+    // Gangotri → Haridwar → Kanpur → Varanasi → Patna → Kolkata
+    coords: [
+      [30.99, 78.93], [29.95, 78.16], [27.89, 78.09],
+      [26.45, 80.33], [25.32, 83.01], [25.61, 85.14], [22.57, 88.36]
+    ],
+    yearlyWQI: {
+      2015: 42, 2016: 45, 2017: 48, 2018: 51, 2019: 54,
+      2020: 47, 2021: 44, 2022: 46, 2023: 49, 2024: 52, 2025: 55
+    },
+    parameters: {
+      "pH":            { value: 7.8, unit: "",       stress: 18 },
+      "Dissolved O₂":  { value: 6.2, unit: "mg/L",  stress: 38 },
+      "BOD":           { value: 4.1, unit: "mg/L",  stress: 62 },
+      "Nitrates":      { value: 2.8, unit: "mg/L",  stress: 28 },
+      "Coliform":      { value: 890, unit: "MPN",   stress: 72 },
+      "Conductivity":  { value: 420, unit: "µS/cm", stress: 42 },
+      "Temperature":   { value: 24,  unit: "°C",    stress: 25 },
+      "TDS":           { value: 310, unit: "mg/L",  stress: 48 },
+      "Turbidity":     { value: 18,  unit: "NTU",   stress: 55 }
+    },
+    seasonalWQI: [38,40,42,48,58,72,68,60,50,44,40,39],
+    cities: ["Kanpur (~2.9M farmers served)", "Varanasi (~1.4M downstream)", "Patna (~2.0M)"]
+  },
+
+  yamuna: {
+    name: "Yamuna",
+    subtitle: "Most Polluted Tributary",
+    // Yamunotri → Delhi → Agra → Prayagraj
+    coords: [
+      [31.01, 78.45], [30.31, 78.04], [28.62, 77.21],
+      [27.18, 78.02], [25.44, 81.84]
+    ],
+    // Yamuna shows IMPROVEMENT 2020–2025 (post-2020 cleanup drives)
+    yearlyWQI: {
+      2015: 68, 2016: 72, 2017: 75, 2018: 78, 2019: 80,
+      2020: 74, 2021: 68, 2022: 62, 2023: 58, 2024: 54, 2025: 51
+    },
+    parameters: {
+      "pH":            { value: 7.2, unit: "",       stress: 12 },
+      "Dissolved O₂":  { value: 3.4, unit: "mg/L",  stress: 78 },
+      "BOD":           { value: 14.2,unit: "mg/L",  stress: 88 },
+      "Nitrates":      { value: 8.9, unit: "mg/L",  stress: 75 },
+      "Coliform":      { value: 4200,unit: "MPN",   stress: 95 },
+      "Conductivity":  { value: 820, unit: "µS/cm", stress: 70 },
+      "Temperature":   { value: 26,  unit: "°C",    stress: 30 },
+      "TDS":           { value: 640, unit: "mg/L",  stress: 82 },
+      "Turbidity":     { value: 32,  unit: "NTU",   stress: 80 }
+    },
+    seasonalWQI: [62,65,70,76,82,88,85,78,70,65,60,58],
+    cities: ["Delhi (~22M affected)", "Agra (~1.8M)", "Mathura (~0.4M)"]
+  },
+
+  godavari: {
+    name: "Godavari",
+    subtitle: "Dakshina Ganga",
+    // Trimbakeshwar → Nashik → Nanded → Rajahmundry
+    coords: [
+      [19.93, 73.53], [19.99, 73.79], [18.20, 75.80],
+      [19.15, 77.32], [17.42, 78.54], [16.98, 81.78]
+    ],
+    yearlyWQI: {
+      2015: 28, 2016: 30, 2017: 32, 2018: 34, 2019: 36,
+      2020: 34, 2021: 33, 2022: 35, 2023: 37, 2024: 39, 2025: 41
+    },
+    parameters: {
+      "pH":            { value: 7.5, unit: "",       stress: 14 },
+      "Dissolved O₂":  { value: 7.8, unit: "mg/L",  stress: 22 },
+      "BOD":           { value: 2.4, unit: "mg/L",  stress: 38 },
+      "Nitrates":      { value: 1.9, unit: "mg/L",  stress: 19 },
+      "Coliform":      { value: 280, unit: "MPN",   stress: 44 },
+      "Conductivity":  { value: 340, unit: "µS/cm", stress: 34 },
+      "Temperature":   { value: 25,  unit: "°C",    stress: 20 },
+      "TDS":           { value: 230, unit: "mg/L",  stress: 35 },
+      "Turbidity":     { value: 8,   unit: "NTU",   stress: 40 }
+    },
+    seasonalWQI: [22,24,26,30,38,52,48,40,32,26,22,21],
+    cities: ["Nashik (~1.5M)", "Nanded (~0.6M)", "Rajahmundry (~1.1M)"]
+  },
+
+  krishna: {
+    name: "Krishna",
+    subtitle: "River of the Deccan",
+    // Mahabaleshwar → Sangli → Kurnool → Vijayawada
+    coords: [
+      [17.92, 73.66], [17.68, 74.01], [16.86, 74.57],
+      [16.83, 75.72], [15.83, 78.04], [16.51, 80.62]
+    ],
+    yearlyWQI: {
+      2015: 22, 2016: 24, 2017: 26, 2018: 28, 2019: 30,
+      2020: 29, 2021: 28, 2022: 30, 2023: 32, 2024: 34, 2025: 36
+    },
+    parameters: {
+      "pH":            { value: 7.9, unit: "",       stress: 10 },
+      "Dissolved O₂":  { value: 8.1, unit: "mg/L",  stress: 15 },
+      "BOD":           { value: 1.8, unit: "mg/L",  stress: 28 },
+      "Nitrates":      { value: 1.2, unit: "mg/L",  stress: 12 },
+      "Coliform":      { value: 180, unit: "MPN",   stress: 30 },
+      "Conductivity":  { value: 290, unit: "µS/cm", stress: 25 },
+      "Temperature":   { value: 26,  unit: "°C",    stress: 28 },
+      "TDS":           { value: 195, unit: "mg/L",  stress: 28 },
+      "Turbidity":     { value: 5,   unit: "NTU",   stress: 33 }
+    },
+    seasonalWQI: [18,20,22,26,34,48,44,36,28,22,18,17],
+    cities: ["Sangli (~0.5M)", "Kurnool (~0.5M)", "Vijayawada (~1.0M)"]
+  },
+
+  narmada: {
+    name: "Narmada",
+    subtitle: "River of the Vindhyas",
+    // Amarkantak → Jabalpur → Barwani → Bharuch
+    coords: [
+      [22.67, 81.75], [23.17, 79.94], [22.75, 77.73],
+      [22.20, 76.00], [22.05, 74.62], [21.71, 72.99]
+    ],
+    yearlyWQI: {
+      2015: 18, 2016: 20, 2017: 21, 2018: 22, 2019: 24,
+      2020: 23, 2021: 22, 2022: 24, 2023: 26, 2024: 27, 2025: 29
+    },
+    parameters: {
+      "pH":            { value: 8.0, unit: "",       stress:  8 },
+      "Dissolved O₂":  { value: 8.9, unit: "mg/L",  stress: 10 },
+      "BOD":           { value: 1.2, unit: "mg/L",  stress: 18 },
+      "Nitrates":      { value: 0.8, unit: "mg/L",  stress:  8 },
+      "Coliform":      { value: 90,  unit: "MPN",   stress: 15 },
+      "Conductivity":  { value: 210, unit: "µS/cm", stress: 18 },
+      "Temperature":   { value: 22,  unit: "°C",    stress: 12 },
+      "TDS":           { value: 140, unit: "mg/L",  stress: 20 },
+      "Turbidity":     { value: 3,   unit: "NTU",   stress: 22 }
+    },
+    seasonalWQI: [14,16,18,20,26,38,34,28,22,18,15,13],
+    cities: ["Jabalpur (~1.3M)", "Barwani (~0.3M)", "Bharuch (~0.6M)"]
+  },
+
+  kaveri: {
+    name: "Kaveri",
+    subtitle: "Lifeline of South India",
+    // Talakaveri → Mysuru → Salem → Trichy → Thanjavur
+    coords: [
+      [12.39, 75.52], [12.42, 75.73], [12.29, 76.65],
+      [11.60, 77.20], [10.79, 78.70], [10.79, 79.14]
+    ],
+    yearlyWQI: {
+      2015: 32, 2016: 34, 2017: 35, 2018: 38, 2019: 40,
+      2020: 38, 2021: 36, 2022: 38, 2023: 40, 2024: 42, 2025: 45
+    },
+    parameters: {
+      "pH":            { value: 7.6, unit: "",       stress: 14 },
+      "Dissolved O₂":  { value: 6.8, unit: "mg/L",  stress: 32 },
+      "BOD":           { value: 3.2, unit: "mg/L",  stress: 52 },
+      "Nitrates":      { value: 2.4, unit: "mg/L",  stress: 24 },
+      "Coliform":      { value: 420, unit: "MPN",   stress: 60 },
+      "Conductivity":  { value: 380, unit: "µS/cm", stress: 38 },
+      "Temperature":   { value: 27,  unit: "°C",    stress: 35 },
+      "TDS":           { value: 265, unit: "mg/L",  stress: 40 },
+      "Turbidity":     { value: 12,  unit: "NTU",   stress: 48 }
+    },
+    seasonalWQI: [28,30,32,36,44,58,55,46,36,30,26,25],
+    cities: ["Mysuru (~0.9M)", "Salem (~0.9M)", "Thanjavur (~0.4M)"]
+  },
+
+  brahmaputra: {
+    name: "Brahmaputra",
+    subtitle: "Son of Brahma",
+    // Sadiya → Dibrugarh → Jorhat → Guwahati → Dhubri
+    coords: [
+      [27.83, 95.66], [27.48, 95.00], [26.75, 94.22],
+      [26.14, 91.74], [26.02, 89.98]
+    ],
+    yearlyWQI: {
+      2015: 15, 2016: 16, 2017: 17, 2018: 18, 2019: 20,
+      2020: 19, 2021: 18, 2022: 20, 2023: 22, 2024: 24, 2025: 25
+    },
+    parameters: {
+      "pH":            { value: 7.3, unit: "",       stress:  8 },
+      "Dissolved O₂":  { value: 9.2, unit: "mg/L",  stress:  8 },
+      "BOD":           { value: 1.0, unit: "mg/L",  stress: 14 },
+      "Nitrates":      { value: 0.5, unit: "mg/L",  stress:  5 },
+      "Coliform":      { value: 60,  unit: "MPN",   stress: 10 },
+      "Conductivity":  { value: 150, unit: "µS/cm", stress: 12 },
+      "Temperature":   { value: 19,  unit: "°C",    stress: 10 },
+      "TDS":           { value: 95,  unit: "mg/L",  stress: 14 },
+      "Turbidity":     { value: 20,  unit: "NTU",   stress: 58 }
+    },
+    seasonalWQI: [12,13,15,18,24,36,38,32,22,16,12,11],
+    cities: ["Dibrugarh (~0.1M)", "Guwahati (~1.0M)", "Dhubri (~0.1M)"]
+  },
+
+  tapi: {
+    name: "Tapi",
+    subtitle: "River of the Khandesh",
+    // Betul → Burhanpur → Jalgaon → Dhule → Surat
+    coords: [
+      [21.91, 77.90], [21.31, 76.23], [21.00, 75.56],
+      [20.90, 74.77], [21.19, 72.83]
+    ],
+    yearlyWQI: {
+      2015: 35, 2016: 38, 2017: 40, 2018: 43, 2019: 46,
+      2020: 44, 2021: 42, 2022: 45, 2023: 48, 2024: 50, 2025: 53
+    },
+    parameters: {
+      "pH":            { value: 7.4, unit: "",       stress: 14 },
+      "Dissolved O₂":  { value: 5.8, unit: "mg/L",  stress: 42 },
+      "BOD":           { value: 4.8, unit: "mg/L",  stress: 68 },
+      "Nitrates":      { value: 3.2, unit: "mg/L",  stress: 32 },
+      "Coliform":      { value: 620, unit: "MPN",   stress: 76 },
+      "Conductivity":  { value: 510, unit: "µS/cm", stress: 52 },
+      "Temperature":   { value: 25,  unit: "°C",    stress: 22 },
+      "TDS":           { value: 350, unit: "mg/L",  stress: 55 },
+      "Turbidity":     { value: 22,  unit: "NTU",   stress: 62 }
+    },
+    seasonalWQI: [30,32,35,40,50,65,62,54,44,36,30,28],
+    cities: ["Burhanpur (~0.2M)", "Dhule (~0.4M)", "Surat (~4.5M)"]
+  }
+};
+
+// PLACEHOLDER DATA — swap with real NCVBDC / State Agriculture Dept. outbreak
+// database before final submission. Locations and report counts are illustrative.
+var outbreakData = [
+  { lat: 19.99, lng: 73.79, disease: "Late Blight",      crop: "Tomato",   reports: 12, trend: "+18%", trendUp: true,  severity: "high",   location: "Nashik, Maharashtra" },
+  { lat: 21.14, lng: 79.08, disease: "Powdery Mildew",   crop: "Cotton",   reports:  6, trend: "+4%",  trendUp: true,  severity: "medium", location: "Nagpur, Maharashtra" },
+  { lat: 18.52, lng: 73.86, disease: "Bacterial Wilt",   crop: "Potato",   reports:  9, trend: "+11%", trendUp: true,  severity: "medium", location: "Pune, Maharashtra" },
+  { lat: 19.88, lng: 75.34, disease: "Leaf Rust",        crop: "Wheat",    reports:  4, trend: "-2%",  trendUp: false, severity: "low",    location: "Sambhajinagar, MH" },
+  { lat: 31.63, lng: 74.87, disease: "Yellow Rust",      crop: "Wheat",    reports: 18, trend: "+23%", trendUp: true,  severity: "high",   location: "Amritsar, Punjab" },
+  { lat: 30.90, lng: 75.85, disease: "Blast Disease",    crop: "Rice",     reports: 11, trend: "+9%",  trendUp: true,  severity: "medium", location: "Ludhiana, Punjab" },
+  { lat: 23.26, lng: 77.41, disease: "Downy Mildew",     crop: "Soybean",  reports:  7, trend: "+5%",  trendUp: true,  severity: "medium", location: "Bhopal, M.P." },
+  { lat: 22.72, lng: 75.86, disease: "Stem Borer",       crop: "Cotton",   reports:  5, trend: "-8%",  trendUp: false, severity: "low",    location: "Indore, M.P." },
+  { lat: 17.38, lng: 78.49, disease: "Fusarium Wilt",    crop: "Chili",    reports: 14, trend: "+31%", trendUp: true,  severity: "high",   location: "Hyderabad, Telangana" },
+  { lat: 11.01, lng: 76.96, disease: "Leaf Curl Virus",  crop: "Tomato",   reports:  8, trend: "+6%",  trendUp: true,  severity: "medium", location: "Coimbatore, TN" },
+  { lat: 20.30, lng: 85.82, disease: "Blast Disease",    crop: "Paddy",    reports: 10, trend: "+14%", trendUp: true,  severity: "medium", location: "Bhubaneswar, Odisha" },
+  { lat: 25.32, lng: 83.01, disease: "Brown Leaf Spot",  crop: "Rice",     reports:  6, trend: "-3%",  trendUp: false, severity: "low",    location: "Varanasi, U.P." }
+];
+
+/* ============================================================
+   COLOUR HELPERS — d3 continuous scale so the slider blends
+   smoothly through green → gold → amber → red
+   ============================================================ */
+var wqiScale = d3.scaleLinear()
+  .domain([20, 42, 64, 85])
+  .range(["#52B788", "#D4A017", "#e0954a", "#e05252"])
+  .clamp(true)
+  .interpolate(d3.interpolateRgb);
+
+function wqiColor(wqi){ return wqiScale(wqi); }
+
+// WQI at a FRACTIONAL year (e.g. 2019.4) — blend of the two nearest readings
+function wqiAt(id, yearF){
+  var y0 = Math.floor(yearF), y1 = Math.min(y0 + 1, 2025);
+  var t = yearF - y0;
+  var a = riverData[id].yearlyWQI[y0], b = riverData[id].yearlyWQI[y1];
+  return a + (b - a) * t;
+}
+
+function wqiLabel(wqi) {
+  if (wqi <= 25) return "SAFE FOR IRRIGATION";
+  if (wqi <= 50) return "MODERATE — CAUTION ADVISED";
+  if (wqi <= 75) return "POLLUTED — TREAT BEFORE USE";
+  return "SEVERELY POLLUTED";
+}
+
+function wqiAdvice(wqi, name) {
+  if (wqi <= 25) return name + " water is within safe limits for direct irrigation. Monitor during monsoon months when runoff increases pollutant load.";
+  if (wqi <= 50) return "Exercise caution with " + name + " water. Avoid use on leafy vegetables. Suitable for flood irrigation of paddy and sugarcane with monthly monitoring.";
+  if (wqi <= 75) return name + " water is polluted and unsafe for direct irrigation. Treat with sedimentation and chlorination. Consider rainwater harvesting as an alternative.";
+  return name + " water must NOT be used for irrigation without full treatment. Risk of crop contamination and long-term soil degradation. Contact your local KVK immediately.";
+}
+
+function outbreakStyle(severity) {
+  var map = {
+    high:   { r: 70, bg: "rgba(224,82,82,0.60)"  },
+    medium: { r: 50, bg: "rgba(224,149,74,0.52)" },
+    low:    { r: 34, bg: "rgba(212,160,23,0.44)" }
+  };
+  return map[severity] || map.low;
+}
+
+// convert our [lat,lng] arrays into MapLibre's [lng,lat] order
+function toLngLat(coords){
+  return coords.map(function(c){ return [c[1], c[0]]; });
+}
+
+/* ============================================================
+   FILM GRAIN — identical canvas noise technique to index.html
+   ============================================================ */
+(function grain(){
+  var c = document.getElementById("grain");
+  var ctx = c.getContext("2d");
+  var S = 140;
+  c.width = S; c.height = S;
+  var img = ctx.createImageData(S, S);
+  var d = img.data;
+  function frame(){
+    for (var i = 0; i < d.length; i += 4){
+      var v = (Math.random() * 255) | 0;
+      d[i] = v; d[i+1] = v; d[i+2] = v; d[i+3] = 34;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  frame();
+  if (!reducedMotion) setInterval(frame, 80);
+})();
+
+/* ============================================================
+   CURSOR GLOW — river-blue tint (vs. green on index.html)
+   ============================================================ */
+(function cursorGlow(){
+  if (isMobile) return;
+
+  var glow = document.createElement("div");
+  glow.style.cssText = [
+    "position:fixed",
+    "width:380px",
+    "height:380px",
+    "border-radius:50%",
+    "pointer-events:none",
+    "z-index:9999",
+    "background:radial-gradient(circle, rgba(26,117,159,.10) 0%, rgba(26,117,159,.03) 40%, transparent 70%)",
+    "transform:translate(-50%,-50%)",
+    "opacity:0",
+    "transition:opacity .6s ease",
+    "will-change:transform,opacity"
+  ].join(";");
+  document.body.appendChild(glow);
+
+  var mouseX = 0, mouseY = 0, glowX = 0, glowY = 0;
+  var idleTimer = null, visible = false, rafId = null;
+
+  function lerp(a, b, t){ return a + (b - a) * t; }
+
+  function animateGlow(){
+    glowX = lerp(glowX, mouseX, 0.12);
+    glowY = lerp(glowY, mouseY, 0.12);
+    glow.style.left = glowX + "px";
+    glow.style.top  = glowY + "px";
+    rafId = requestAnimationFrame(animateGlow);
+  }
+
+  document.addEventListener("mousemove", function(e){
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    if (!visible){ visible = true; glow.style.opacity = "1"; if (!rafId) animateGlow(); }
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function(){ visible = false; glow.style.opacity = "0"; }, 2200);
+  });
+
+  document.addEventListener("mouseleave", function(){
+    clearTimeout(idleTimer);
+    visible = false;
+    glow.style.opacity = "0";
+  });
+
+  document.addEventListener("visibilitychange", function(){
+    if (document.hidden){ cancelAnimationFrame(rafId); rafId = null; }
+    else if (visible) animateGlow();
+  });
+})();
+
+/* ============================================================
+   AMBIENT PARTICLES — slow upward drift
+   ============================================================ */
+(function particles(){
+  if (reducedMotion) return;
+
+  var canvas = document.getElementById("particles");
+  var ctx = canvas.getContext("2d");
+  var COUNT = isMobile ? 25 : 80;
+  var dots = [];
+
+  function resize(){
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener("resize", resize);
+
+  for (var i = 0; i < COUNT; i++){
+    dots.push({
+      x:       Math.random() * window.innerWidth,
+      y:       Math.random() * window.innerHeight,
+      r:       Math.random() * 1.5 + 0.4,
+      speed:   Math.random() * 0.28 + 0.08,
+      opacity: Math.random() * 0.16 + 0.04
+    });
+  }
+
+  function draw(){
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (var j = 0; j < dots.length; j++){
+      var d = dots[j];
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(82,183,136," + d.opacity + ")";
+      ctx.fill();
+      d.y -= d.speed;
+      if (d.y < -4){ d.y = canvas.height + 4; d.x = Math.random() * canvas.width; }
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+/* ============================================================
+   3D MAP INIT — MapLibre GL with pitch + rotation enabled.
+   Controls, exactly like Google Maps:
+     • drag            → pan
+     • right-drag      → rotate + tilt          (desktop)
+     • ctrl+drag       → rotate + tilt          (desktop)
+     • two-finger twist→ rotate, two-finger drag up/down → tilt (mobile)
+     • scroll          → smooth fractional zoom
+   ============================================================ */
+var START_PITCH = reducedMotion ? 35 : (isMobile ? 42 : 52);
+
+var map = new maplibregl.Map({
+  container: "map",
+  // Carto's free Dark Matter GL style — no API key needed
+  style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  center: [80.5, 22.5],
+  zoom: reducedMotion ? 4.4 : 3.2,   // intro flight starts zoomed out
+  pitch: reducedMotion ? START_PITCH : 0,
+  bearing: 0,
+  minZoom: 3,
+  maxZoom: 11,
+  maxPitch: 70,
+  antialias: true,
+  attributionControl: { compact: true }
+});
+
+// touch gestures for 3D on mobile
+map.touchZoomRotate.enable();
+map.touchPitch.enable();
+map.dragRotate.enable();
+
+// intentional global (same pattern as window.__lenis on index.html) —
+// lets other scripts / the console drive the camera for debugging
+window.__map = map;
+
+/* ============================================================
+   STATE
+   ============================================================ */
+var state = { yearF: 2020 };
+var currentMode    = "water";
+var selectedId     = null;
+var playTween      = null;
+var riverIds       = Object.keys(riverData);
+var labelMarkers   = {};          // id → maplibregl.Marker (river name)
+var endpointMarkers= [];
+var outbreakMarkers= [];
+var arrowMarkers   = [];
+var displayedYear  = 2020;
+var lastPanelYear  = 2020;
+
+/* ============================================================
+   RIVER LAYERS — per river: glow bed, core line, comet pulses,
+   invisible fat hit line. All drawn in WebGL, so they tilt and
+   rotate WITH the terrain — true 3D, no CSS fakery.
+   ============================================================ */
+function addRiverLayers(){
+  riverIds.forEach(function(id){
+    var r = riverData[id];
+    var col = wqiColor(wqiAt(id, state.yearF));
+
+    map.addSource("src-" + id, {
+      type: "geojson",
+      data: {
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: toLngLat(r.coords) }
+      }
+    });
+
+    // 1. glow bed — wide, heavily blurred (native GL blur, GPU-cheap)
+    map.addLayer({
+      id: "glow-" + id,
+      type: "line",
+      source: "src-" + id,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": col,
+        "line-width": 14,
+        "line-blur": 6,
+        "line-opacity": 0,                       // intro fades this in
+        "line-opacity-transition": { duration: 800 },
+        "line-color-transition":   { duration: 300 }
+      }
+    });
+
+    // 2. bright core with animated flowing dashes
+    map.addLayer({
+      id: "core-" + id,
+      type: "line",
+      source: "src-" + id,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": col,
+        "line-width": 3.5,
+        "line-opacity": 0,
+        "line-opacity-transition": { duration: 800 },
+        "line-color-transition":   { duration: 300 },
+        "line-width-transition":   { duration: 300 }
+      }
+    });
+
+    // 3. white-hot comets racing along the river
+    map.addLayer({
+      id: "pulse-" + id,
+      type: "line",
+      source: "src-" + id,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#d9fff0",
+        "line-width": 2.5,
+        "line-opacity": 0,
+        "line-opacity-transition": { duration: 800 }
+      }
+    });
+
+    // 4. invisible fat line — the touch/click target
+    map.addLayer({
+      id: "hit-" + id,
+      type: "line",
+      source: "src-" + id,
+      paint: { "line-color": "#000", "line-width": 24, "line-opacity": 0.01 }
+    });
+  });
+}
+
+/* ============================================================
+   DASH FLOW ANIMATION — MapLibre can't CSS-animate dashes, so
+   we step the dasharray pattern each tick. makeDashSeq() builds
+   one full cycle of patterns for a moving dash of length `dash`
+   inside a repeating period `total`.
+   ============================================================ */
+function makeDashSeq(total, dash, steps){
+  var seq = [];
+  for (var s = 0; s < steps; s++){
+    var o = (s / steps) * total;              // current offset of the dash
+    if (o + dash <= total){
+      // [lead-dash 0, gap to dash, dash, trailing gap]
+      seq.push([0, o, dash, total - o - dash]);
+    } else {
+      // dash wraps around the period boundary
+      var over = o + dash - total;
+      seq.push([over, total - dash, dash - over, 0]);
+    }
+  }
+  return seq;
+}
+
+var FLOW_STEPS = 24;
+var flowSeq  = makeDashSeq(7,  3.5, FLOW_STEPS);   // core: steady flow
+var cometSeq = makeDashSeq(26, 0.9, FLOW_STEPS);   // pulse: sparse fast comets
+var flowPhase = 0;
+
+function startFlowAnimation(){
+  if (reducedMotion) return;
+  setInterval(function(){
+    flowPhase = (flowPhase + 1) % FLOW_STEPS;
+    var cometPhase = (flowPhase * 2) % FLOW_STEPS;  // comets travel 2× faster
+    riverIds.forEach(function(id){
+      map.setPaintProperty("core-"  + id, "line-dasharray", flowSeq[flowPhase]);
+      map.setPaintProperty("pulse-" + id, "line-dasharray", cometSeq[cometPhase]);
+    });
+  }, 70);
+}
+
+/* ============================================================
+   LABELS + ENDPOINT DOTS — DOM markers that track the 3D camera
+   ============================================================ */
+function addMarkers(){
+  riverIds.forEach(function(id){
+    var r = riverData[id];
+
+    var el = document.createElement("div");
+    el.className = "river-label";
+    el.id = "label-" + id;
+    el.textContent = r.name.toUpperCase();
+    var mid = r.coords[Math.floor(r.coords.length / 2)];
+    labelMarkers[id] = new maplibregl.Marker({ element: el })
+      .setLngLat([mid[1], mid[0]])
+      .addTo(map);
+
+    [r.coords[0], r.coords[r.coords.length - 1]].forEach(function(pt, k){
+      var dot = document.createElement("div");
+      dot.className = "endpoint-dot";
+      dot.style.animationDelay = (k * 1.3) + "s";
+      endpointMarkers.push(
+        new maplibregl.Marker({ element: dot })
+          .setLngLat([pt[1], pt[0]])
+          .addTo(map)
+      );
+    });
+  });
+}
+
+/* ============================================================
+   YEAR ENGINE — applies a fractional year to every river.
+   Paint transitions (300ms) make colours glide, GPU-side.
+   ============================================================ */
+var yearDisplay = document.getElementById("year-display");
+var slider = document.getElementById("year-slider");
+
+function applyYear(){
+  var yf = state.yearF;
+
+  riverIds.forEach(function(id){
+    var col = wqiColor(wqiAt(id, yf));
+    map.setPaintProperty("core-" + id, "line-color", col);
+    map.setPaintProperty("glow-" + id, "line-color", col);
+  });
+
+  var yr = Math.round(yf);
+  if (yr !== displayedYear){
+    displayedYear = yr;
+    yearDisplay.textContent = yr;
+    slider.setAttribute("aria-valuenow", yr);
+    if (!reducedMotion){
+      gsap.fromTo(yearDisplay, { scale: 1.12 }, { scale: 1, duration: 0.35, ease: "power2.out" });
+    }
+    if (selectedId && currentMode === "water" && yr !== lastPanelYear){
+      lastPanelYear = yr;
+      showRiverPanel(selectedId);
+    }
+  }
+}
+
+slider.addEventListener("input", function(){
+  stopPlay();
+  state.yearF = parseFloat(this.value);
+  applyYear();
+});
+
+/* ============================================================
+   PLAY — one continuous tween across the decade
+   ============================================================ */
+var playBtn = document.getElementById("play-btn");
+
+function stopPlay(){
+  if (playTween){ playTween.kill(); playTween = null; }
+  playBtn.textContent = "▶";
+  playBtn.classList.remove("playing");
+  playBtn.setAttribute("aria-label", "Play year animation");
+}
+
+function startPlay(){
+  playBtn.textContent = "⏸";
+  playBtn.classList.add("playing");
+  playBtn.setAttribute("aria-label", "Pause year animation");
+
+  function sweep(){
+    var remaining = 2025 - state.yearF;
+    playTween = gsap.to(state, {
+      yearF: 2025,
+      duration: Math.max(remaining * 1.3, 0.1),
+      ease: "none",
+      onUpdate: function(){
+        slider.value = state.yearF;
+        applyYear();
+      },
+      onComplete: function(){
+        state.yearF = 2015;
+        sweep();
+      }
+    });
+  }
+  sweep();
+}
+
+playBtn.addEventListener("click", function(){
+  playTween ? stopPlay() : startPlay();
+});
+
+/* ============================================================
+   RIVER SELECTION — true 3D cinematic camera
+   ============================================================ */
+function highlightRiver(id){
+  riverIds.forEach(function(k){
+    var sel = (k === id);
+    map.setPaintProperty("core-" + k, "line-width",  sel ? 6 : 3.5);
+    map.setPaintProperty("glow-" + k, "line-width",  sel ? 20 : 14);
+    map.setPaintProperty("glow-" + k, "line-opacity", sel ? 0.75 : 0.35);
+  });
+}
+
+function unhighlightAll(){
+  riverIds.forEach(function(k){
+    map.setPaintProperty("core-" + k, "line-width", 3.5);
+    map.setPaintProperty("glow-" + k, "line-width", 14);
+    map.setPaintProperty("glow-" + k, "line-opacity", 0.35);
+  });
+}
+
+function onRiverClick(id, lngLat){
+  selectedId = id;
+  lastPanelYear = displayedYear;
+
+  // STEP 1 — instant highlight + expanding ring at click point
+  highlightRiver(id);
+  if (lngLat) spawnClickRing(lngLat);
+
+  // STEP 2 — REAL 3D camera swoop: frame the river's bounds,
+  // then fly there with a fresh pitch + slight random bearing,
+  // like an aerial camera banking over the valley
+  var coords = toLngLat(riverData[id].coords);
+  var bounds = coords.reduce(function(b, c){ return b.extend(c); },
+    new maplibregl.LngLatBounds(coords[0], coords[0]));
+
+  var cam = map.cameraForBounds(bounds, { padding: 90 });
+  if (cam){
+    map.flyTo({
+      center:  cam.center,
+      zoom:    cam.zoom - 0.15,
+      pitch:   isMobile ? 45 : 58,
+      bearing: (Math.random() * 30) - 15,        // gentle random bank angle
+      duration: reducedMotion ? 0 : (isMobile ? 1300 : 2100),
+      curve: 1.42,                               // swooping arc height
+      essential: true
+    });
+  }
+
+  // STEP 3 — vignette pulse synced with the flight
+  if (!reducedMotion){
+    gsap.timeline()
+      .to("#vignette", { opacity: 0.68, duration: 0.4, ease: "power2.in" })
+      .to("#vignette", { opacity: 0.42, duration: 1.4, ease: "power3.out" }, "+=0.2");
+  }
+
+  // STEP 4 — panel slides in as the camera settles
+  setTimeout(function(){ showRiverPanel(id); }, reducedMotion ? 0 : 1500);
+
+  // STEP 5 — flow-direction arrows (rotate WITH the map, so they
+  // stay geographically correct at any bearing)
+  clearFlowArrows();
+  setTimeout(function(){ addFlowArrows(id); }, reducedMotion ? 0 : 1700);
+}
+
+/* expanding ring marker at the click point */
+function spawnClickRing(lngLat){
+  var el = document.createElement("div");
+  el.className = "click-ring";
+  var m = new maplibregl.Marker({ element: el }).setLngLat(lngLat).addTo(map);
+  setTimeout(function(){ m.remove(); }, 750);
+}
+
+/* ============================================================
+   FLOW ARROWS — markers with rotationAlignment:"map" rotate and
+   tilt together with the 3D scene
+   ============================================================ */
+function clearFlowArrows(){
+  arrowMarkers.forEach(function(m){ m.remove(); });
+  arrowMarkers = [];
+}
+
+function addFlowArrows(id){
+  var coords = riverData[id].coords;
+  var maxArrows = Math.min(5, coords.length - 1);
+  var step = Math.max(1, Math.floor((coords.length - 1) / maxArrows));
+
+  for (var i = 0; i < coords.length - 1 && arrowMarkers.length < maxArrows; i += step){
+    var a = coords[i], b = coords[i + 1];
+    var mid = [(a[1] + b[1]) / 2, (a[0] + b[0]) / 2];   // [lng, lat]
+
+    // geographic bearing of this segment (0 = north, clockwise)
+    var dLat = b[0] - a[0], dLng = b[1] - a[1];
+    var angle = Math.atan2(dLng, dLat) * 180 / Math.PI;
+
+    var el = document.createElement("div");
+    el.className = "flow-arrow";
+    el.textContent = "▲";
+    el.style.animationDelay = (arrowMarkers.length * 0.4) + "s";
+
+    arrowMarkers.push(
+      new maplibregl.Marker({
+        element: el,
+        rotation: angle,
+        rotationAlignment: "map",   // stays correct when the user rotates
+        pitchAlignment: "map"       // lies flat on the tilted ground plane
+      }).setLngLat(mid).addTo(map)
+    );
+  }
+}
+
+/* ============================================================
+   SIDE PANEL — river water quality detail
+   ============================================================ */
+function showRiverPanel(id){
+  var r = riverData[id];
+  var wqi = Math.round(wqiAt(id, displayedYear));
+  var col = wqiColor(wqi);
+
+  var paramHtml = Object.keys(r.parameters).map(function(key){
+    var p = r.parameters[key];
+    var barCol = p.stress < 33 ? "#52B788" : p.stress < 66 ? "#D4A017" : "#e05252";
+    return '<div class="param-row">' +
+      '<span class="param-name">' + key + '</span>' +
+      '<div class="param-track"><div class="param-fill" style="width:' + p.stress + '%;background:' + barCol + ';color:' + barCol + '"></div></div>' +
+      '<span class="param-val">' + p.value + (p.unit ? " " + p.unit : "") + '</span>' +
+    '</div>';
+  }).join("");
+
+  var months = r.seasonalWQI;
+  var svgW = 320, svgH = 66;
+  var lo = Math.min.apply(null, months), hi = Math.max.apply(null, months);
+  var range = Math.max(hi - lo, 1);
+  var pts = months.map(function(v, i){
+    return ((i / 11) * svgW).toFixed(1) + "," +
+           (svgH - ((v - lo) / range) * (svgH - 10)).toFixed(1);
+  }).join(" ");
+  var circles = months.map(function(v, i){
+    return '<circle cx="' + ((i / 11) * svgW).toFixed(1) + '"' +
+           ' cy="' + (svgH - ((v - lo) / range) * (svgH - 10)).toFixed(1) + '"' +
+           ' r="3" fill="' + wqiColor(v) + '"/>';
+  }).join("");
+
+  var seasonSvg = '<svg style="width:100%;height:' + svgH + 'px" viewBox="0 0 ' + svgW + ' ' + svgH + '" preserveAspectRatio="none">' +
+    '<polyline points="' + pts + '" fill="none" stroke="' + col + '" stroke-width="2" stroke-linejoin="round"/>' +
+    circles + '</svg>';
+
+  var citiesHtml = r.cities.map(function(c){
+    return '<div class="city-row"><div class="city-dot"></div>' + c + '</div>';
+  }).join("");
+
+  document.getElementById("panel-content").innerHTML =
+    '<div class="p-river-name">' + r.name.toUpperCase() + '</div>' +
+    '<div class="p-subtitle">' + r.subtitle + '</div>' +
+    '<div class="p-year-badge">DATA YEAR: ' + displayedYear + '</div>' +
+    '<div class="p-wqi-block">' +
+      '<div class="p-wqi-num" style="color:' + col + '">' + wqi + '</div>' +
+      '<div class="p-wqi-label" style="color:' + col + '">' + wqiLabel(wqi) + '</div>' +
+    '</div>' +
+    '<div class="p-divider"></div>' +
+    '<div class="p-section-title">Water Quality Parameters</div>' +
+    paramHtml +
+    '<div class="p-divider"></div>' +
+    '<div class="p-section-title">Seasonal WQI Variation (Jan – Dec)</div>' +
+    seasonSvg +
+    '<div class="month-row"><span>Jan</span><span>Mar</span><span>May</span><span>Jul</span><span>Sep</span><span>Nov</span></div>' +
+    '<div class="p-divider"></div>' +
+    '<div class="p-section-title">Downstream Impact</div>' +
+    citiesHtml +
+    '<div class="rec-box" style="border-left-color:' + col + '">' +
+      wqiAdvice(wqi, r.name) +
+    '</div>';
+
+  var panel = document.getElementById("river-panel");
+  panel.classList.add("open");
+  panel.setAttribute("aria-hidden", "false");
+}
+
+/* ============================================================
+   CLOSE PANEL
+   ============================================================ */
+function closePanel(){
+  var panel = document.getElementById("river-panel");
+  panel.classList.remove("open");
+  panel.setAttribute("aria-hidden", "true");
+
+  if (selectedId){
+    unhighlightAll();
+    selectedId = null;
+  }
+  clearFlowArrows();
+}
+
+document.getElementById("panel-close-btn").addEventListener("click", closePanel);
+
+/* ============================================================
+   UNIFIED MAP CLICK + HOVER
+   One handler queries the invisible hit layers: clicking a river
+   selects it, clicking empty map closes the panel. No event
+   double-firing (the old Leaflet version needed stopPropagation).
+   ============================================================ */
+var hitLayerIds = riverIds.map(function(id){ return "hit-" + id; });
+var hoveredId = null;
+
+map.on("click", function(e){
+  if (currentMode !== "water"){ closePanel(); return; }
+  var feats = map.queryRenderedFeatures(e.point, { layers: hitLayerIds });
+  if (feats.length){
+    var id = feats[0].layer.id.replace("hit-", "");
+    onRiverClick(id, e.lngLat);
+  } else {
+    closePanel();
+  }
+});
+
+map.on("mousemove", function(e){
+  if (currentMode !== "water") return;
+  var feats = map.queryRenderedFeatures(e.point, { layers: hitLayerIds });
+  var id = feats.length ? feats[0].layer.id.replace("hit-", "") : null;
+
+  if (id !== hoveredId){
+    // restore the previously hovered river
+    if (hoveredId && hoveredId !== selectedId){
+      map.setPaintProperty("core-" + hoveredId, "line-width", 3.5);
+      map.setPaintProperty("glow-" + hoveredId, "line-opacity", 0.35);
+      var oldLb = document.getElementById("label-" + hoveredId);
+      if (oldLb) oldLb.classList.remove("lit");
+    }
+    // light up the new one
+    if (id && id !== selectedId){
+      map.setPaintProperty("core-" + id, "line-width", 5);
+      map.setPaintProperty("glow-" + id, "line-opacity", 0.6);
+    }
+    if (id){
+      var lb = document.getElementById("label-" + id);
+      if (lb) lb.classList.add("lit");
+    }
+    map.getCanvas().style.cursor = id ? "pointer" : "";
+    hoveredId = id;
+  }
+});
+
+/* ============================================================
+   DISEASE OUTBREAK LAYER
+   ============================================================ */
+function showOutbreakLayer(){
+  riverIds.forEach(function(k){
+    map.setPaintProperty("core-"  + k, "line-opacity", 0.15);
+    map.setPaintProperty("glow-"  + k, "line-opacity", 0.05);
+    map.setPaintProperty("pulse-" + k, "line-opacity", 0);
+    var lb = document.getElementById("label-" + k);
+    if (lb) lb.style.opacity = 0.15;
+  });
+  endpointMarkers.forEach(function(m){ m.getElement().style.opacity = 0.15; });
+
+  outbreakData.forEach(function(ob, i){
+    var s = outbreakStyle(ob.severity);
+    var el = document.createElement("div");
+    el.className = "outbreak-blob";
+    el.style.width  = (s.r * 2) + "px";
+    el.style.height = (s.r * 2) + "px";
+    el.style.background = "radial-gradient(" + s.bg + " 0%, transparent 70%)";
+    el.style.animationDelay = (i * 0.28).toFixed(2) + "s";
+
+    el.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      showOutbreakPanel(ob);
+    });
+
+    outbreakMarkers.push(
+      new maplibregl.Marker({ element: el })
+        .setLngLat([ob.lng, ob.lat])
+        .addTo(map)
+    );
+  });
+
+  updateLegend("disease");
+  document.getElementById("mode-label").textContent = "🔴 Disease Outbreak View";
+}
+
+function hideOutbreakLayer(){
+  outbreakMarkers.forEach(function(m){ m.remove(); });
+  outbreakMarkers = [];
+
+  riverIds.forEach(function(id){
+    map.setPaintProperty("core-"  + id, "line-opacity", 0.95);
+    map.setPaintProperty("glow-"  + id, "line-opacity", 0.35);
+    map.setPaintProperty("pulse-" + id, "line-opacity", 0.9);
+    var lb = document.getElementById("label-" + id);
+    if (lb) lb.style.opacity = "";
+  });
+  endpointMarkers.forEach(function(m){ m.getElement().style.opacity = ""; });
+  applyYear();
+
+  updateLegend("water");
+  document.getElementById("mode-label").textContent = "💧 Water Quality View";
+}
+
+/* ============================================================
+   DISEASE OUTBREAK PANEL
+   ============================================================ */
+function showOutbreakPanel(ob){
+  var sevCol = ob.severity === "high" ? "#e05252" : ob.severity === "medium" ? "#e0954a" : "#D4A017";
+
+  document.getElementById("panel-content").innerHTML =
+    '<div class="p-disease-name">' + ob.disease.toUpperCase() + '</div>' +
+    '<div class="p-crop-tag">CROP: ' + ob.crop.toUpperCase() + '</div>' +
+    '<div class="p-year-badge" style="margin-bottom:18px">' + ob.location + '</div>' +
+    '<div class="p-section-title">Reports This Week</div>' +
+    '<div class="p-wqi-block" style="margin-bottom:10px">' +
+      '<div class="p-report-count" style="color:' + sevCol + '">' + ob.reports + '</div>' +
+      '<div class="trend-chip ' + (ob.trendUp ? "trend-up" : "trend-down") + '" style="margin-bottom:6px">' +
+        (ob.trendUp ? "↑ " : "↓ ") + ob.trend + ' vs last week' +
+      '</div>' +
+    '</div>' +
+    '<div class="p-divider"></div>' +
+    '<div class="p-section-title">Severity Level</div>' +
+    '<div style="display:inline-block;padding:5px 14px;border-radius:8px;font-size:11px;font-weight:600;' +
+         'text-transform:uppercase;letter-spacing:.12em;background:rgba(224,82,82,.1);color:' + sevCol + ';margin-bottom:18px">' +
+      ob.severity.toUpperCase() +
+    '</div>' +
+    '<div class="p-divider"></div>' +
+    '<div class="p-section-title">Field Advisory</div>' +
+    '<div class="rec-box" style="border-left-color:' + sevCol + '">' +
+      getOutbreakAdvice(ob.disease) +
+    '</div>';
+
+  var panel = document.getElementById("river-panel");
+  panel.classList.add("open");
+  panel.setAttribute("aria-hidden", "false");
+}
+
+function getOutbreakAdvice(disease){
+  // PLACEHOLDER DATA — replace with real KVK advisory database
+  var a = {
+    "Late Blight":     "Apply Bordeaux mixture (1%) immediately. Remove infected plant material. Avoid overhead irrigation. Report cluster of >5 plants to local KVK.",
+    "Powdery Mildew":  "Apply wettable sulphur (0.3%). Improve air circulation. Avoid excess nitrogen. Spray in the morning — evening sprays can increase humidity.",
+    "Bacterial Wilt":  "No chemical cure. Remove and burn all infected plants. Rotate with non-solanaceous crops for minimum 2 seasons to break the cycle.",
+    "Leaf Rust":       "Apply Propiconazole 25 EC (0.1%) at first sign. Avoid irrigation during high humidity periods. Switch to resistant variety next season.",
+    "Yellow Rust":     "Apply Tebuconazole (25.9% EC) at 0.1% concentration. Monitor daily. Alert agriculture dept if cluster covers >0.5 acres.",
+    "Blast Disease":   "Drain fields and apply Tricyclazole 75% WP at 0.06%. Avoid excess nitrogen. Maintain 2–5 cm water level for 2 weeks after treatment.",
+    "Downy Mildew":    "Apply Metalaxyl + Mancozeb mixture. Drain waterlogged areas first. Avoid evening irrigation that keeps foliage wet overnight.",
+    "Stem Borer":      "Apply Chlorpyrifos 20 EC at 2.5 ml/L or use pheromone traps for monitoring. Introduce Trichogramma egg parasitoids for biological control.",
+    "Fusarium Wilt":   "Soil drench with Carbendazim 0.1%. Use seed treatment before next sowing. Maintain soil pH 6.0–6.5 with lime — Fusarium thrives in acidic soils.",
+    "Leaf Curl Virus": "No direct cure — control whitefly vector with Imidacloprid 0.05%. Remove infected plants at once. Use reflective mulch to deter vectors.",
+    "Brown Leaf Spot": "Apply Mancozeb 75% WP (2 g/L). Balance potassium fertilisation. Avoid water stress during grain-filling stage — stress worsens susceptibility."
+  };
+  return a[disease] || "Consult your local KVK (Krishi Vigyan Kendra) for a field inspection and a tailored treatment plan.";
+}
+
+/* ============================================================
+   LEGEND SWITCHER
+   ============================================================ */
+function updateLegend(mode){
+  var el = document.getElementById("legend");
+  if (mode === "water"){
+    el.innerHTML =
+      '<div class="legend-title">Water Quality Index</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#52B788;color:#52B788"></div>Safe (0–25)</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#D4A017;color:#D4A017"></div>Moderate (26–50)</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#e0954a;color:#e0954a"></div>Polluted (51–75)</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#e05252;color:#e05252"></div>Severe (76+)</div>' +
+      '<div class="legend-note">Data: CPCB River Monitoring<br>(simulated for demo)</div>';
+  } else {
+    el.innerHTML =
+      '<div class="legend-title">Outbreak Severity</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#e05252;color:#e05252;border-radius:50%;height:10px;width:10px"></div>High</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#e0954a;color:#e0954a;border-radius:50%;height:10px;width:10px"></div>Medium</div>' +
+      '<div class="legend-row"><div class="legend-swatch" style="background:#D4A017;color:#D4A017;border-radius:50%;height:10px;width:10px"></div>Low</div>' +
+      '<div class="legend-note">Source: KisanAI crowdsourced<br>reports (simulated for demo)</div>';
+  }
+}
+updateLegend("water");
+
+/* ============================================================
+   LAYER TOGGLE HANDLERS
+   ============================================================ */
+document.getElementById("btn-water").addEventListener("click", function(){
+  if (currentMode === "water") return;
+  currentMode = "water";
+  hideOutbreakLayer();
+  this.classList.add("active");
+  this.setAttribute("aria-pressed", "true");
+  document.getElementById("btn-disease").classList.remove("active");
+  document.getElementById("btn-disease").setAttribute("aria-pressed", "false");
+  closePanel();
+});
+
+document.getElementById("btn-disease").addEventListener("click", function(){
+  if (currentMode === "disease") return;
+  currentMode = "disease";
+  showOutbreakLayer();
+  this.classList.add("active");
+  this.setAttribute("aria-pressed", "true");
+  document.getElementById("btn-water").classList.remove("active");
+  document.getElementById("btn-water").setAttribute("aria-pressed", "false");
+  closePanel();
+});
+
+document.getElementById("btn-mobile-toggle").addEventListener("click", function(){
+  if (currentMode === "water"){
+    currentMode = "disease";
+    showOutbreakLayer();
+    this.textContent = "💧";
+  } else {
+    currentMode = "water";
+    hideOutbreakLayer();
+    this.textContent = "🗺️";
+  }
+  closePanel();
+});
+
+/* ============================================================
+   CAMERA CONTROLS — smooth eased zoom, compass reset, 2D/3D
+   ============================================================ */
+function smoothZoom(delta){
+  map.easeTo({
+    zoom: map.getZoom() + delta,
+    duration: reducedMotion ? 0 : 650,
+    easing: function(t){ return 1 - Math.pow(1 - t, 3); }   // cubic ease-out
+  });
+}
+document.getElementById("zoom-in").addEventListener("click",  function(){ smoothZoom(+1); });
+document.getElementById("zoom-out").addEventListener("click", function(){ smoothZoom(-1); });
+
+// compass — resets bearing to north (keeps current pitch)
+document.getElementById("compass-btn").addEventListener("click", function(){
+  map.easeTo({ bearing: 0, duration: reducedMotion ? 0 : 900, easing: function(t){ return 1 - Math.pow(1 - t, 3); } });
+});
+
+// the needle mirrors the live bearing so users always know where north is
+map.on("rotate", function(){
+  document.getElementById("compass-needle").style.transform =
+    "rotate(" + (-map.getBearing()) + "deg)";
+});
+
+// 2D / 3D toggle — flattens or restores the pitch
+var is3D = true;
+document.getElementById("tilt-btn").addEventListener("click", function(){
+  is3D = !is3D;
+  this.textContent = is3D ? "3D" : "2D";
+  map.easeTo({
+    pitch: is3D ? START_PITCH : 0,
+    duration: reducedMotion ? 0 : 1100,
+    easing: function(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2; }
+  });
+});
+
+/* ============================================================
+   AMBIENT RIVER PULSE — a random river glows brighter every
+   4 seconds (paint transitions animate it GPU-side)
+   ============================================================ */
+function startAmbientPulse(){
+  if (reducedMotion) return;
+  setInterval(function(){
+    if (currentMode !== "water") return;
+    var pick = riverIds[Math.floor(Math.random() * riverIds.length)];
+    if (pick === selectedId || pick === hoveredId) return;
+
+    map.setPaintProperty("core-" + pick, "line-width", 5.5);
+    map.setPaintProperty("glow-" + pick, "line-opacity", 0.65);
+    setTimeout(function(){
+      if (pick !== selectedId && pick !== hoveredId && currentMode === "water"){
+        map.setPaintProperty("core-" + pick, "line-width", 3.5);
+        map.setPaintProperty("glow-" + pick, "line-opacity", 0.35);
+      }
+    }, 800);
+  }, 4000);
+}
+
+/* ============================================================
+   ROTATE HINT — device-appropriate copy, fades after 9s
+   ============================================================ */
+(function rotateHint(){
+  var hint = document.getElementById("rotate-hint");
+  hint.innerHTML = isMobile
+    ? "🌏 <b>Two-finger twist</b> to rotate · <b>two-finger drag</b> to tilt"
+    : "🌏 <b>Right-drag</b> (or Ctrl+drag) to rotate & tilt · <b>scroll</b> to zoom";
+  setTimeout(function(){ hint.style.opacity = "0"; }, 9000);
+})();
+
+/* ============================================================
+   INTRO SEQUENCE — loader fades, rivers fade+grow in staggered,
+   and the camera performs an opening swoop from a high orbit
+   down into the tilted 3D view of the subcontinent.
+   ============================================================ */
+(function initLoader(){
+  var title = document.getElementById("loading-title");
+  var text = title.textContent;
+  title.innerHTML = text.split("").map(function(ch){
+    return '<span class="lt-ch">' + (ch === " " ? "&nbsp;" : ch) + '</span>';
+  }).join("");
+  if (!reducedMotion){
+    gsap.to("#loading-title .lt-ch", {
+      opacity: 1, y: 0, duration: 0.6, ease: "power3.out",
+      stagger: 0.035, delay: 0.1
+    });
+  } else {
+    gsap.set("#loading-title .lt-ch", { opacity: 1, y: 0 });
+  }
+
+  var bar = document.getElementById("load-bar");
+  var progress = 0;
+  var ticker = setInterval(function(){
+    progress = Math.min(progress + Math.random() * 15, 90);
+    bar.style.width = progress + "%";
+  }, 100);
+
+  map.on("load", function(){
+    clearInterval(ticker);
+    bar.style.width = "100%";
+
+    addRiverLayers();
+    addMarkers();
+    applyYear();
+    startFlowAnimation();
+    startAmbientPulse();
+
+    setTimeout(function(){
+      var screen = document.getElementById("loading-screen");
+      screen.classList.add("fade-out");
+      setTimeout(function(){ screen.style.display = "none"; }, 900);
+
+      // opening camera swoop: zoomed-out flat → tilted 3D over India
+      if (!reducedMotion){
+        map.flyTo({
+          center: [80.5, 22.5],
+          zoom: isMobile ? 4.1 : 4.7,
+          pitch: START_PITCH,
+          bearing: -8,
+          duration: 3400,
+          curve: 1.3,
+          essential: true
+        });
+      }
+
+      // rivers fade + grow in, staggered north to south
+      riverIds.forEach(function(id, i){
+        setTimeout(function(){
+          map.setPaintProperty("core-"  + id, "line-opacity", 0.95);
+          map.setPaintProperty("glow-"  + id, "line-opacity", 0.35);
+          map.setPaintProperty("pulse-" + id, "line-opacity", 0.9);
+        }, reducedMotion ? 0 : 500 + i * 220);
+      });
+    }, reducedMotion ? 0 : 450);
+  });
+})();
+
+})(); // end IIFE
+</script>
+</body>
+</html>
