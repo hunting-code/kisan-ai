@@ -321,6 +321,6 @@ Register an account, upload a leaf photo on the Detect Disease page, confirm a r
 
 ## Authors
 
-Built by [Your Name] as a final year Data Science capstone project.
+Built by Abhishek Sali as a final year Data Science capstone project.
 
 > "AI that speaks the farmer's language."
